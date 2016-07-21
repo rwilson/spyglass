@@ -3,7 +3,7 @@
   (:refer-clojure :exclude [set get flush replace])
   (:import [net.spy.memcached MemcachedClient ConnectionFactory DefaultConnectionFactory
             BinaryConnectionFactory KetamaConnectionFactory AddrUtil ConnectionFactoryBuilder
-            FailureMode ConnectionFactoryBuilder$Protocol CASValue]
+            FailureMode ConnectionFactoryBuilder$Protocol CASValue ClientMode]
            [net.spy.memcached.transcoders Transcoder SerializingTranscoder]
            [clojurewerkz.spyglass OperationFuture BulkGetFuture GetFuture]
            [net.spy.memcached.auth AuthDescriptor PlainCallbackHandler]))
@@ -35,10 +35,39 @@
   (to-failure-mode [input]
     (to-failure-mode (name input))))
 
+(defprotocol AsClientMode
+  (^ClientMode to-client-mode [input]))
+
+(extend-protocol AsClientMode
+  ClientMode
+  (to-client-mode [input]
+    input)
+
+  String
+  (to-client-mode [input]
+    (case input
+      "dynamic" ClientMode/Dynamic
+      "static"  ClientMode/Static))
+
+  clojure.lang.Named
+  (to-client-mode [input]
+    (to-client-mode (name input))))
+
 (defn- ^ConnectionFactory customize-factory
-  [^ConnectionFactory cf {:keys [failure-mode transcoder auth-descriptor timeout-exception-threshold]}]
+  "Param `client-mode` defaults to `:static` unless specified, in contrast to the
+  underlying AWS ElastiCache client, which defaults to `:dynamic`. Defaultling to
+  `:dynamic`, however, prevents the client from working against any server-list
+  except for a configuration endpoint. So, rather than sprinkling `:static` mode
+  throughout the codebase (tests and all), we default to `:static` where all the
+  `ConnectionFactory` instances are configured, and require callers to explicitly
+  enable `:dynamic` mode when constructing a connection."
+  [^ConnectionFactory cf
+   {:keys [client-mode failure-mode transcoder auth-descriptor timeout-exception-threshold]
+    :or   {client-mode :static}}]
   (let [;; Houston, we have a *FactoryFactory here!
         cfb (ConnectionFactoryBuilder. cf)]
+    (when client-mode
+      (.setClientMode cfb (to-client-mode client-mode)))
     (when failure-mode
       (.setFailureMode cfb (to-failure-mode failure-mode)))
     (if transcoder
@@ -67,41 +96,6 @@
 ;; API
 ;;
 
-(declare text-connection-factory bin-connection-factory)
-
-(defn text-connection
-  "Returns a new text protocol client that will use the provided list of servers."
-  ([^String server-list]
-     (MemcachedClient. (DefaultConnectionFactory.) (servers server-list)))
-  ([^String server-list ^DefaultConnectionFactory cf]
-     (MemcachedClient. cf (servers server-list)))
-  ([^String server-list ^String username ^String password]
-     (let [ad (AuthDescriptor/typical username password)]
-       (MemcachedClient. (text-connection-factory :auth-descriptor ad) (servers server-list)))))
-
-(defn auth-descriptor
-  ([^String username ^String password]
-     (AuthDescriptor/typical username password))
-  ([^String username ^String password mechanism]
-     (if-not (contains? #{:plain :cram-md5} mechanism)
-       (auth-descriptor)
-       (AuthDescriptor. (into-array java.lang.String
-                                    [(clojure.string/upper-case (name mechanism))])
-                        (PlainCallbackHandler. username password)))))
-
-(defn bin-connection
-  "Returns a new binary protocol client that will use the provided list of servers."
-  ([^String server-list]
-     (MemcachedClient. (BinaryConnectionFactory.) (servers server-list)))
-  ([^String server-list ^BinaryConnectionFactory cf]
-     (MemcachedClient. cf (servers server-list)))
-  ([^String server-list ^String username ^String password]
-     (let [ad (auth-descriptor username password)]
-       (MemcachedClient. (bin-connection-factory :auth-descriptor ad) (servers server-list))))
-  ([^String server-list ^String username ^String password auth-type]
-     (let [ad (auth-descriptor username password auth-type)]
-       (MemcachedClient. (bin-connection-factory :auth-descriptor ad) (servers server-list)))))
-
 (defn ^ConnectionFactory text-connection-factory
   [& {:as opts}]
   (customize-factory (DefaultConnectionFactory.) opts))
@@ -113,6 +107,39 @@
 (defn ^ConnectionFactory ketama-connection-factory
   [& {:as opts}]
   (customize-factory (KetamaConnectionFactory.) opts))
+
+(defn auth-descriptor
+  ([^String username ^String password]
+     (AuthDescriptor/typical username password))
+  ([^String username ^String password mechanism]
+     (if-not (contains? #{:plain :cram-md5} mechanism)
+       (auth-descriptor)
+       (AuthDescriptor. (into-array java.lang.String
+                                    [(clojure.string/upper-case (name mechanism))])
+                        (PlainCallbackHandler. username password)))))
+
+(defn text-connection
+  "Returns a new text protocol client that will use the provided list of servers."
+  ([^String server-list]
+     (text-connection server-list (text-connection-factory)))
+  ([^String server-list ^DefaultConnectionFactory cf]
+     (MemcachedClient. cf (servers server-list)))
+  ([^String server-list ^String username ^String password]
+     (let [ad (auth-descriptor username password)]
+       (MemcachedClient. (text-connection-factory :auth-descriptor ad) (servers server-list)))))
+
+(defn bin-connection
+  "Returns a new binary protocol client that will use the provided list of servers."
+  ([^String server-list]
+     (bin-connection server-list (bin-connection-factory)))
+  ([^String server-list ^BinaryConnectionFactory cf]
+     (MemcachedClient. cf (servers server-list)))
+  ([^String server-list ^String username ^String password]
+     (let [ad (auth-descriptor username password)]
+       (MemcachedClient. (bin-connection-factory :auth-descriptor ad) (servers server-list))))
+  ([^String server-list ^String username ^String password auth-type]
+     (let [ad (auth-descriptor username password auth-type)]
+       (MemcachedClient. (bin-connection-factory :auth-descriptor ad) (servers server-list)))))
 
 (defn ^clojurewerkz.spyglass.OperationFuture flush
   "Flush all caches from all servers. One-arity version flushes all caches
