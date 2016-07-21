@@ -1,10 +1,10 @@
-(defproject clojurewerkz/spyglass "1.2.0-SNAPSHOT"
+(defproject clojurewerkz/spyglass-elasticache "1.2.0-SNAPSHOT"
   :description "A Clojure client for Memcached implemented as a very thin layer on top of SpyMemcached"
   :url "http://github.com/clojurewerkz/spyglass"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.6.0"]
-                 [net.spy/spymemcached "2.12.0"]
+                 [com.amazonaws/elasticache-java-cluster-client "1.1.0"]
                  [com.couchbase.client/java-client "2.2.4"]]
   :repositories {"sonatype" {:url "http://oss.sonatype.org/content/repositories/releases"
                              :snapshots false
@@ -31,4 +31,3 @@
                    :focus         :focus
                    :couchbase     :couchbase
                    :all           (constantly true)})
-
